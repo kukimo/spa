@@ -9,15 +9,23 @@
 */
 /*global $, spa */
 spa.shell = (function() {
+	'use strict';
+
 	//----モジュールスコープ変数開始------
 	var
 	  configMap = {
 	  	anchor_schema_map : {
-	  	  chat : { open : true, closed : true }
+	  	  chat : { opened : true, closed : true }
 	  	},
+
+	  	resize_interval : 200,
+
 	  	main_html : String()
 	  	  + '<div class="spa-shell-head">'
-            + '<div class="spa-shell-head-logo"></div>'
+            + '<div class="spa-shell-head-logo">'
+              + '<h1>SPA</h1>'
+              + '<p>javascript end to end</p>'
+              + '</div>'
             + '<div class="spa-shell-head-acct"></div>'
             + '<div class="spa-shell-head-search"></div>'
           + '</div>'
@@ -26,24 +34,18 @@ spa.shell = (function() {
             + '<div class="spa-shell-main-content"></div>'
           + '</div>'
           + '<div class="spa-shell-foot"></div>'
-          + '<div class="spa-shell-chat"></div>'
           + '<div class="spa-shell-modal"></div>',
-        chat_extend_time    : 1000,
-        chat_retract_time   : 300,
-        chat_extend_height  : 450,
-        chat_retract_height : 15,
-        chat_extended_title : 'チャットウィンドウを閉じる',
-        chat_retracted_title: 'チャットウィンドウを開く'
 	  },
 	  stateMap = { 
-	  	$container        : null,
+	  	$container        : undefined,
 	  	anchor_map        : {},
-	  	is_chat_retracted : true
+	  	resize_idto       : undefined
 	  },
 	  jqueryMap = {},
 
-	  copyAnchorMap, setJqueryMap, toggleChat, changeAnchorPart, 
-	  onHashchange, onClickChat, initModule;
+	  copyAnchorMap, setJqueryMap, changeAnchorPart, 
+	  onResize, onTapAcct, onLogin, onLogout,
+	  onHashchange, setChatAnchor, initModule;
 	//----モジュールスコープ変数終了------
 
 	//-----ユーティリティメソッド開始-----
@@ -114,68 +116,11 @@ spa.shell = (function() {
 		var $container = stateMap.$container;
 		jqueryMap = { 
 			$container : $container,
-			$chat : $container.find( '.spa-shell-chat' )
+			$acct : $container.find('.spa-shell-head-acct'),
+			$nav : $container.find('.spa-shell-main-nav')
 		};
 	};
 	// DOMメソッド/setJqueryMap/終了
-
-    // DOMメソッド/toggleChat/start
-    // 目的:チャットスライダーの拡大・格納
-    // 引数:
-    //   * do_extend - trueのとき、スライダーをかくだいする。falseのときは格納する
-    //   * callback  - アニメーションの最後に実行するオプションのコールバック
-    // 設定：
-    //   * chat_extend_time, chat_retract_time
-    //   * chat_extend_height, chat_retract_height
-    // 状態：stateMap.is_chat_retractedを設定する
-    //   * true-スライダーは格納されている
-    //   * false-スライダーは拡大されている
-    // 戻り値: boolean
-    //   * true - スライダーアニメーションが開始された
-    //   * false- スライダーアニメーションが開始できなかった
-    toggleChat = function( do_extend, callback ) {
-    	var
-    	  px_chat_ht = jqueryMap.$chat.height(),
-    	  is_open = px_chat_ht === configMap.chat_extend_height,
-    	  is_closed = px_chat_ht === configMap.chat_retract_height,
-    	  is_sliding = !is_open && !is_closed;
-
-    	//競合状態を避ける
-    	if( is_sliding ) { return false; }
-
-    	//チャットスライダーの拡大開始
-    	if( do_extend ) {
-    	  jqueryMap.$chat.animate(
-    	    { height : configMap.chat_extend_height },
-    	    configMap.chat_extend_time,
-    	    function() {
-    	      jqueryMap.$chat.attr(
-    	        'title', configMap.chat_extended_title
-    	      );
-    	      stateMap.is_chat_retracted = false;
-    	      if ( callback ) { callback( jqueryMap.$chat ); }
-    	    }
-    	  );
-    	  return true;
-    	}
-    	// チャットスライダーの拡大終了
-
-    	//チャットスライダーの格納開始
-    	jqueryMap.$chat.animate(
-    	  { height : configMap.chat_retract_height },
-    	   configMap.chat_retract_time,
-    	   function() {
-    	   	 jqueryMap.$chat.attr(
-    	   	   'title', configMap.chat_retracted_title
-    	   	 );
-    	   	 stateMap.is_chat_retracted = true;
-    	     if( callback ) { callback( jqueryMap.$chat ); }
-    	   }
-    	);
-        return true;
-    	//チャットスライダーの格納終了
-    };
-    // DOMメソッド/toggleChat/end
 
 	//-----DOMメソッド終了--------------
 
@@ -189,9 +134,11 @@ spa.shell = (function() {
 	// 動作：
 	//   * URIアンカー要素を解析する
 	//   * 提示されたアプリケーション状態と現在の状態を比較する
-	//   * 提示された状態が現在の状態と異なるならアプリケーションを調整する
+	//   * 提示された状態が現在の状態と異なり、アンカースキーマで
+	//     許可されている場合はアプリケーションを調整する
 	onHashchange = function( event ) {
 	  var
+	    is_ok = true,
 	    anchor_map_previous = copyAnchorMap(),
 	    anchor_map_proposed,
 	    _s_chat_previous, _s_chat_proposed,
@@ -213,46 +160,105 @@ spa.shell = (function() {
 	  if( !anchor_map_previous || _s_chat_previous !== _s_chat_proposed ) {
 	  	s_chat_proposed = anchor_map_proposed.chat;
 	  	switch( s_chat_proposed ) {
-	  	  case 'open':
-	  	    toggleChat(true);
+	  	  case 'opened':
+	  	    is_ok = spa.chat.setSliderPosition('opened');
 	  	    break;
 	  	  case 'closed':
-	  	    toggleChat(false);
+	  	    is_ok = spa.chat.setSliderPosition('closed');
 	  	    break;
 	  	  default:
-	  	    toggleChat(false);
+	  	    spa.chat.setSliderPosition('closed');
 	  	    delete anchor_map_proposed.chat;
 	  	    $.uriAnchor.setAnchor( anchor_map_proposed, null, true );
 	  	}
 	  }
 	  //チャットコンポーネント更新終了
 
+	  //スライダー変更できなかったときにアンカーを元に戻す start
+	  if (!is_ok) {
+	  	if(anchor_map_previous) {
+	  	  $.uriAnchor.setAnchor( anchor_map_previous, null, true );
+	  	  stateMap.anchor_map = anchor_map_previous;
+	  	} else {
+	  	  delete anchor_map_proposed.chat;
+	  	  $.uriAnchor.setAnchor( anchor_map_proposed, null, true);
+	  	}
+	  }
+	  //スライダー変更できなかったときにアンカーを元に戻す end
+
 	  return false;
+	};
+
+	onTapAcct = function( event ) {
+	  var acct_text, user_name, user = spa.model.people.get_user();
+	  if( user.get_is_anon() ) {
+	  	user_name = prompt( 'Please sign-in' );
+	  	spa.model.people.login( user_name );
+	  	jqueryMap.$acct.text( '...processing...' );
+	  } else {
+	  	spa.model.people.logout();
+	  }
+	  return false;
+	};
+
+	onLogin = function( event, login_user ) {
+	  jqueryMap.$acct.text( login_user.name );
+	};
+
+	onLogout = function( event, logout_user ) {
+	  jqueryMap.$acct.text( 'Please sign-in' );
 	};
 	//イベントハンドラ/onHashchange/end
 
-    //イベントハンドラ/onClickChat/start
-	onClickChat = function( event ) {
-		changeAnchorPart( {
-		  chat: ( stateMap.is_chat_retracted ? 'open' : 'closed' )
-		});
-		return false;
+	// onResize/start
+	onResize = function() {
+	  if( stateMap.resize_idto ) { return true; }
+
+	  spa.chat.handleResize();
+	  stateMap.resize_idto = setTimeout(
+	  	function() { stateMap.resize_idto = undefined; },
+	  	configMap.resize_interval
+	  );
 	};
-	//イベントハンドラ/onCLickChat/end
+	// onResize/end
 
 	//-----イベントハンドラ終了----------
 
+	//------コールバックメソッド開始-----
+	// コールバックメソッド/setChatAnchor/start
+	// 用例：setChatAnchor( 'closed' )
+	// 目的：アンカーのチャットコンポーネントを変更する
+	// 引数：
+	//   * position_type - 「closed」または「opened」
+	// 動作：
+	//   * 可能ならURIアンカーパラメータ「chat」を要求値に変更する
+	// 戻り値：
+	//   * true - 要求されたアンカー部分が更新された
+	//   * false- 要求されたアンカー部分が更新されなかった
+	// 例外発行： なし
+	setChatAnchor = function( position_type ) {
+	  return changeAnchorPart({ chat : position_type });
+	};
+	// コールバックメソッド/setChatanchor/end
+	//------コールバックメソッド終了-----
+
 	//------パブリックメソッド開始-------
 	// public/initModule/start
+	// 用例：spa.shell.initModule( $('#app_div_id'));
+	// 目的：チャットモジュールを初期化する
+	// 引数：
+	//   * $append_target(例：$('#app_div_id'))
+	//     一つDOMコンテナを表すjQueryコレクション
+	// 動作：
+	//   $containerにUIシェルを含め、機能モジュールを構成して初期化する。
+	//   シェルはURIアンカーやCookieの管理などのブラウザ全体を管理する
+	// 戻り値：なし
+	// 例外発行：なし
 	initModule = function( $container ) {
 		//HTMLをロードし、jQueryコレクションをマッピングする
 		stateMap.$container = $container;
 		$container.html( configMap.main_html );
 		setJqueryMap();
-
-		//チャットスライダーを初期化し、クリックハンドラをバインドする
-		stateMap.is_chat_retracted = true;
-		jqueryMap.$chat.attr('title', configMap.chat_retracted_title).click( onClickChat );
 
 		//uriAnchorを設定
 		$.uriAnchor.configModule({
@@ -260,14 +266,25 @@ spa.shell = (function() {
 		});
 
 		// 機能モジュールを構成して初期化する
-		spa.chat.configModule( {} );
-		spa.chat.initModule( jqueryMap.$chat );
+		spa.chat.configModule( {
+		  set_chat_anchor : setChatAnchor,
+		  chat_model : spa.model.chat,
+		  people_model : spa.model.people
+		} );
+		spa.chat.initModule( jqueryMap.$container );
+
+		$.gevent.subscribe( $container, 'spa-login', onLogin );
+		$.gevent.subscribe( $container, 'spa-logout', onLogout );
+		jqueryMap.$acct.text( 'Please sign-in' ).bind( 'utap', onTapAcct );
 
 		//URIアンカー変更イベントを処理する
 		//これは全ての機能モジュールを設定して初期化した後に行う。
 		//そうしないとトリガーイベントを処理できる状態になっていない。
 		//トリガーイベントはアンカーがロード状態と見なせることを保証するために使う
-		$(window).bind( 'hashchange', onHashchange ).trigger( 'hashchange' );
+		$(window)
+		  .bind( 'resize', onResize )
+		  .bind( 'hashchange', onHashchange )
+		  .trigger( 'hashchange' );
 	};
 	// public/initModule/end
 	return { initModule : initModule };
